@@ -1,0 +1,87 @@
+USE SANDBOX.OPS;
+
+SET Stdd = 165.088678285;
+--SELECT
+--STDDEV_SAMP("Days stayed in warehouse")
+--FROM
+--(
+
+SELECT *
+, CASE
+    WHEN "Days stayed in warehouse" < 7 THEN 'Less than 1 week'
+    WHEN "Days stayed in warehouse" > 6 AND "Days stayed in warehouse" < 31 THEN 'Less than 1 month'
+    WHEN "Days stayed in warehouse" > 30 AND "Days stayed in warehouse" < 91 THEN 'Less than 3 month'
+    WHEN "Days stayed in warehouse" > 90 AND "Days stayed in warehouse" < 181 THEN 'Less than 6 month'
+    WHEN "Days stayed in warehouse" > 180 AND "Days stayed in warehouse" < 366 THEN 'Less than 1 year'
+    WHEN "Days stayed in warehouse" > 365 AND "Days stayed in warehouse" < 731 THEN 'Less than 2 year'
+    ELSE 'outliers'
+  END AS "Period"
+, INSERT(YEAR("Date of Entrance"),5,0,'Q') || QUARTER("Date of Entrance") AS "Year and Quarter"
+, "Days stayed in warehouse" / $Stdd AS Stdv
+, CEIL("Days stayed in warehouse" / $Stdd) AS StdvRange
+--, STDDEV_POP("Days stayed in warehouse") OVER (PARTITION BY "LPN Number")
+--, AVG("Days stayed in warehouse") AS average
+FROM
+(WITH cte_DOE1 
+AS 
+(SELECT "LPN Number"
+,"Warehouse Code" --Usually the LPN starts at warehouse code starts at San Joses in US.
+,"Receipt #" --Receipt# changes as it moves from one warehouse to another. However, the change of product class doesn't change the Receipt #.
+,"Product Class" --FA,DOA,DEFECTIVE,GOOD,PURGE are main ones we care about. Other ones with SPTS are different company.
+,MIN("Activity Date") "Date of Entrance" --Earliest Date of the item that enters a specific Warehouse under a designated LPN
+--,"Product Class"
+FROM
+
+(SELECT *                        
+FROM SANDBOX.OPS.DHL_LPN_HISTORY_WIP
+WHERE YEAR("Activity Date") > 2014--The data is going back to 2015-01-01, hence to minimize the misformation, 2016 and later was selected
+AND CONTAINS("Adjustment Reason Code", 'RECEIPT') --RECEIPT and RECEIVED indicated together mean the warehouse received the item
+--AND CONTAINS("LPN Status", 'RECEIVED')
+ORDER BY "LPN Number", "Warehouse Code", "Activity Date")
+
+GROUP BY "LPN Number", "Warehouse Code", "Receipt #", "Product Class"
+),
+cte_DOE2 
+AS 
+(SELECT "LPN Number"
+,"Warehouse Code" --Usually the LPN starts at warehouse code starts at San Joses in US.
+,"Receipt #" --Receipt# changes as it moves from one warehouse to another. However, the change of product class doesn't change the Receipt #.
+,"Product Class" --FA,DOA,DEFECTIVE,GOOD,PURGE are main ones we care about. Other ones with SPTS are different company.
+,MAX("Activity Date") "Date of Exit" --Latest Date of the item that exits a specific Warehouse under a designated LPN
+--,"Product Class"
+FROM
+(SELECT *
+FROM SANDBOX.OPS.DHL_LPN_HISTORY_WIP
+WHERE YEAR("Activity Date") > 2014--The data is also going back to 2015-01-01. Later, if a max LPN doesn't have a match with min LPN, then they will be sorted out
+AND CONTAINS("Adjustment Reason Code", 'PACK') --PACT and ATP together mean the warehouse sent the item
+--AND CONTAINS("LPN Status", 'ATP')
+ORDER BY "LPN Number", "Warehouse Code", "Activity Date")
+  
+GROUP BY "LPN Number", "Warehouse Code", "Receipt #", "Product Class"
+)
+
+SELECT
+cte_DOE1."LPN Number"
+, cte_DOE1."Warehouse Code"
+, cte_DOE1."Product Class"
+, cte_DOE1."Receipt #"
+, cte_DOE1."Date of Entrance"
+, cte_DOE2."Date of Exit"
+, DATEDIFF(day, cte_DOE1."Date of Entrance", cte_DOE2."Date of Exit") AS "Days stayed in warehouse" --The date the item entered the warehouse subtracted by the item exited the warehouse is the days it stayed at the particular warehouse
+--,COUNT(cte_DOE1."LPN Number")
+FROM cte_DOE1
+INNER JOIN cte_DOE2 ON cte_DOE1."LPN Number" = cte_DOE2."LPN Number"
+AND cte_DOE1."Warehouse Code" = cte_DOE2."Warehouse Code"
+AND cte_DOE1."Receipt #" = cte_DOE2."Receipt #"
+WHERE "Days stayed in warehouse" <> 0 --To sort out the missing data
+
+AND cte_DOE2."Date of Exit" > cte_DOE1."Date of Entrance" --To also sort out the missing data
+--AND "Days stayed in warehouse" < 0
+AND cte_DOE1."Warehouse Code" IS NOT NULL
+--GROUP BY cte_DOE1."LPN Number"
+ORDER BY cte_DOE1."LPN Number", cte_DOE1."Date of Entrance"
+)
+
+--There are quite a lot of missing data, and this query is calculating the items that both have the entrance and the exit date where the entrance date is earlier than the exit date(a particular Warehouse)
+--EX) If Date of Exit is 2018-01-16 and the Date of Entrance is 2018-03-01, and they are the only existing data, then I did not count the data in the query because the head and the tail of the LPN data are missing
+--  )
