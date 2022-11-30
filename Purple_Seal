@@ -1,0 +1,22 @@
+USE SANDBOX.OPS;
+
+SELECT
+"LPN Number"
+, "PRID"
+, "Warehouse Code"
+, MIN("Activity Date") AS MINIMUM
+, Max("Activity Date") AS MAXIMUM
+, DATEDIFF(day, MIN("Activity Date"), MAX("Activity Date")) AS DATE_DIF
+, ROW_NUMBER() OVER(PARTITION BY "LPN Number", "Warehouse Code" ORDER BY MAXIMUM ASC) AS row_number --To check that there is no multiple PRIDs under a Warehouse Code
+FROM (
+
+SELECT *
+FROM DHL_LPN_HISTORY_WIP AS DHL
+LEFT JOIN GEAR.INSIGHTS.MFG_DOA_WITH_NC AS NC ON "PRID" = NC."PRTNUMBER"
+WHERE NC."PRTNUMBER" IS NOT NULL
+AND NC."FAIL_DATE" < DHL."Activity Date"
+AND NC."PARTCOLORSEAL" = 'PURPLE'
+  )
+GROUP BY "LPN Number", "PRID", "Warehouse Code", "Receipt #"
+ORDER BY "LPN Number", "MINIMUM"
+   
