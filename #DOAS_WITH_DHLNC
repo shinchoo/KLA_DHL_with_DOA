@@ -4,7 +4,7 @@ SELECT
 "LPN Number"
 ,"PRID"
 , COUNT("LPN Number","PRID") CA
-, MAX(CASE "Product Class" WHEN 'DOA' THEN 1 ELSE 0 END) AS MX
+, MAX(CASE "Product Class" WHEN 'DOA' THEN 1 ELSE 0 END) AS MX //Pay attention to the technique
 , MAX(CASE "Product Class" WHEN 'GOOD' THEN 1 ELSE 0 END) AS MX2
 , MAX(CASE "Product Class" WHEN 'DEFECTIVE' THEN 1 ELSE 0 END) AS MX3
 , MAX(CASE "Product Class" WHEN 'FA' THEN 1 ELSE 0 END) AS MX4
