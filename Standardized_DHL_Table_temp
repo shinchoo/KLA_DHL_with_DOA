@@ -1,11 +1,79 @@
-USE SANDBOX.OPS;
+create or replace view SANDBOX.OPS.STANDARDIZED_DHL_TABLE(
+"Unique ID by LPN#"
+,"LPN Number"
+,"Warehouse Code"
+,"Receipt #"
+,"Date of Entrance"
+,"Date of Exit"
+,"Warehouse Cycle Time"
+,"Warehouse TimeRange"
+,"# of Warehouses"
+,"Total Cycle Time"
+,"Total Aging Time"
+,"# of PRIDs"
+,"DOA"
+,"# of DOA Cases"
+,"First Fail Date"
+,"Part Number"
+,"PART_NUMBER"
+,"PART_DESCRIPTION"
+,"STD_COST") AS (
+//This grabs the Standard Cost information on part numbers
+WITH
+cte_DHL2
+AS
+(SELECT *
+FROM (
+WITH
+cte_part_dhl_2 AS
+(
+//To calculate the max order date for each part number
+WITH
+cte_part_dhl_1 AS
+(SELECT *
+  FROM
+  (SELECT "Material" AS part_number, MAX("Snapshot Date") AS max_date
+--part_description, std_cost  
+FROM GEAR.INSIGHTS.GSS_BAXTER_MATERIAL_MASTER
+GROUP BY part_number
+  )
+)
 
+//join the main table to the new table with the max order date to get the most recent price
+SELECT MFG."Material" AS part_number
+,"Material Description" AS part_description
+,"Standard_Cost" as std_cost
+,max_date
+FROM GEAR.INSIGHTS.GSS_BAXTER_MATERIAL_MASTER AS MFG
+INNER JOIN cte_part_dhl_1 ON MFG."Material" = cte_part_dhl_1.part_number
+AND MFG."Snapshot Date" = cte_part_dhl_1.max_date
+GROUP BY MFG."Material", part_description, std_cost, max_date
+)
+
+//if there are multiple prices for the same order date then take the max std_cost
+SELECT part_number, part_description, MAX(std_cost) AS std_cost
+FROM cte_part_dhl_2
+GROUP BY part_number, part_description
+)
+WHERE std_cost <> 0
+)
+
+SELECT DISTINCT *
+FROM(
+//To join with the DHL_LPN_HISTORY_WIP table in order to grab the prime part number
+WITH cte_DHL1
+AS
+(
+//This grabs all the necessary information from the DHL_LPN_HISTORY_WIP
+WITH cte_DOE9
+AS
+(
 //This is to calculate the number of warehouses the LPN has gone through
 WITH cte_DOE4
 AS
 (SELECT "LPN Number"
 ,COUNT(DISTINCT "Warehouse Code", "Receipt #") AS "# of Warehouses"
-FROM DHL_LPN_HISTORY_WIP
+FROM SANDBOX.OPS.DHL_LPN_HISTORY_WIP
 GROUP BY "LPN Number")
 
 //This is to grab the first date LPN showed up in DHL network
@@ -13,39 +81,34 @@ GROUP BY "LPN Number")
 AS
 (SELECT "LPN Number"
 , MIN("Activity Date") AS FD
-FROM DHL_LPN_HISTORY_WIP
-GROUP BY "LPN Number"
-)
+FROM SANDBOX.OPS.DHL_LPN_HISTORY_WIP
+GROUP BY "LPN Number")
 
 //This is to grab the maximum date of each LPN. This is in connection with the cte_DOE7
 ,cte_DOE6
 AS
-(
-SELECT "LPN Number"
+(SELECT "LPN Number"
 ,MAX("Activity Date") AS "Activity Date2"
-FROM DHL_LPN_HISTORY_WIP
-GROUP BY "LPN Number"
-  )
+FROM SANDBOX.OPS.DHL_LPN_HISTORY_WIP
+GROUP BY "LPN Number")
   
 //This is to grab the date that a part exited the system because it was properly used in the system or returned to the proper repair center
 ,cte_DOE7
 AS
-(
-SELECT DHL.*
+(SELECT DHL.*
 , cte_DOE6."Activity Date2"
-FROM DHL_LPN_HISTORY_WIP AS DHL
+FROM SANDBOX.OPS.DHL_LPN_HISTORY_WIP AS DHL
 INNER JOIN cte_DOE6 ON DHL."LPN Number" = cte_DOE6."LPN Number"
 AND DHL."Activity Date" = cte_DOE6."Activity Date2"
 WHERE DHL.PRID IS NOT NULL
-AND CONTAINS("Adjustment Reason Code", 'PACK')
-  )
+AND CONTAINS("Adjustment Reason Code", 'PACK'))
 
 //This is the main SELECT
 SELECT
-ROW_NUMBER() OVER(ORDER BY cte_DOE3."LPN Number" ASC) AS "Unique ID"
-,cte_DOE3.*
+ROW_NUMBER() OVER(PARTITION BY cte_DOE3."LPN Number" ORDER BY "Date of Entrance" ASC) AS "Unique ID by LPN#" --Start at 1 for each LPN Number
+, cte_DOE3.*
 , CASE
-    WHEN "Warehouse Cycle Time" < 31 THEN 'Less than 1 month'
+    WHEN "Warehouse Cycle Time" < 31 THEN 'Less than 1 month'                                 --Make the buckets based on the Total Cycle Time and Total Aging Time -> Aging in Network & Aging Out of Network, Remove the Warehouse TimeRange
     WHEN "Warehouse Cycle Time" > 30 AND "Warehouse Cycle Time" < 91 THEN '1-3 month'
     WHEN "Warehouse Cycle Time" > 90 AND "Warehouse Cycle Time" < 181 THEN '3-6 month'
     WHEN "Warehouse Cycle Time" > 180 AND "Warehouse Cycle Time" < 366 THEN '6 month-1 year'
@@ -66,6 +129,7 @@ ROW_NUMBER() OVER(ORDER BY cte_DOE3."LPN Number" ASC) AS "Unique ID"
   END AS "Total Aging Time"
 FROM
 
+  //Start of Query #1
 //This is to grab the minimum date of any warehouses
 (WITH cte_DOE1 
 AS 
@@ -81,8 +145,8 @@ WHERE YEAR("Activity Date") > 2014
 AND CONTAINS("Adjustment Reason Code", 'RECEIPT')
 ORDER BY "LPN Number", "Warehouse Code", "Activity Date")
 
-GROUP BY "LPN Number", "Warehouse Code", "Receipt #"
-),
+GROUP BY "LPN Number", "Warehouse Code", "Receipt #")
+,
  
 //This is to grab the maximum date of any warehouses where the part was shipped out if there is one
 cte_DOE2 
@@ -116,10 +180,48 @@ AND cte_DOE1."Receipt #" = cte_DOE2."Receipt #"
 WHERE "Warehouse Cycle Time" <> 0
 AND cte_DOE1."Warehouse Code" IS NOT NULL
 ORDER BY cte_DOE1."LPN Number", cte_DOE1."Date of Entrance"
+ //End of Query #1
+ 
 ) AS cte_DOE3
 
 LEFT JOIN cte_DOE4 ON cte_DOE3."LPN Number" = cte_DOE4."LPN Number"
 LEFT JOIN cte_DOE5 ON cte_DOE3."LPN Number" = cte_DOE5."LPN Number"
 LEFT JOIN cte_DOE7 ON cte_DOE3."LPN Number" = cte_DOE7."LPN Number"
+--WHERE cte_DOE3."LPN Number" = '1000000768452'
 
-ORDER BY cte_DOE3."LPN Number" ASC
+ORDER BY cte_DOE3."LPN Number", "Date of Entrance" ASC
+  )
+
+//This grabs the number of PRIDs in a LPN Number
+  ,cte_DOE10
+  AS
+  (
+    SELECT "LPN Number"
+      ,COUNT("PRID") "# of PRIDs"
+      ,MAX(CASE WHEN "PRTNUMBER" IS NULL THEN 0 ELSE 1 END) AS "DOA"
+      ,COUNT(DISTINCT PRTNUMBER) AS "# of DOA Cases"
+      ,MIN(FAIL_DATE) AS "First Fail Date"
+      ,MIN(FAILDATE) AS "First Full Fail Date"
+    FROM (
+    SELECT *
+    FROM SANDBOX.OPS.DHL_LPN_HISTORY_WIP AS DHL
+    LEFT JOIN GEAR.INSIGHTS.MFG_DOA_WITH_NC AS NC ON DHL.PRID = NC.PRTNUMBER
+)
+GROUP BY "LPN Number"
+  )
+  
+//This combines the tables
+SELECT cte_DOE9.*
+, cte_DOE10."# of PRIDs"
+, cte_DOE10."DOA"
+, cte_DOE10."# of DOA Cases"
+, cte_DOE10."First Fail Date"
+FROM cte_DOE9
+LEFT JOIN cte_DOE10 ON cte_DOE9."LPN Number" = cte_doe10."LPN Number")
+
+SELECT cte_DHL1.*
+, DHL."Part Number"
+FROM cte_DHL1
+LEFT JOIN SANDBOX.OPS.DHL_LPN_HISTORY_WIP AS DHL ON cte_DHL1."LPN Number" = DHL."LPN Number"
+ORDER BY "LPN Number")
+LEFT JOIN cte_DHL2 ON "Part Number" = cte_DHL2."PART_NUMBER")
